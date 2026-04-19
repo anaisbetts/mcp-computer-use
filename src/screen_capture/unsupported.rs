@@ -3,7 +3,7 @@
 //! Keeps the rest of the server compiling and running so input actions
 //! still work; only screenshot calls return a clear error.
 
-use super::{CaptureError, Screenshot, ScreenCapture};
+use super::{CaptureError, ScreenCapture, Screenshot};
 
 pub struct UnsupportedCapture;
 

@@ -10,7 +10,7 @@ use image::{ImageFormat, imageops::FilterType};
 use libwayshot::WayshotConnection;
 use std::io::Cursor;
 
-use super::{CaptureError, Screenshot, ScreenCapture, compute_scale_factor};
+use super::{CaptureError, ScreenCapture, Screenshot, compute_scale_factor};
 use crate::scaling::scaled_dimensions;
 
 // -----------------------------------------------------------------------------

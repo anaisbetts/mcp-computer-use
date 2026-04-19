@@ -151,7 +151,11 @@ impl SplitComputerServer {
 
     #[tool(description = "Computer use: wait")]
     fn computer_wait(&self) -> String {
-        response_to_json(&self.backend.execute_batch(&[computer_use::ComputerAction::Wait]))
+        response_to_json(
+            &self
+                .backend
+                .execute_batch(&[computer_use::ComputerAction::Wait]),
+        )
     }
 
     #[tool(description = "Computer use: keypress")]

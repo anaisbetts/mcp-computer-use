@@ -12,7 +12,7 @@ use std::io::Cursor;
 use windows_capture::dxgi_duplication_api::{DxgiDuplicationApi, DxgiDuplicationFormat};
 use windows_capture::monitor::Monitor;
 
-use super::{CaptureError, Screenshot, ScreenCapture, compute_scale_factor};
+use super::{CaptureError, ScreenCapture, Screenshot, compute_scale_factor};
 use crate::scaling::scaled_dimensions;
 
 // -----------------------------------------------------------------------------

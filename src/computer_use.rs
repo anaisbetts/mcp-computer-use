@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::desktop::{DesktopController, DesktopError};
 use crate::scaling::CoordinateMap;
-use crate::screen_capture::{self, CaptureError, Screenshot, ScreenCapture};
+use crate::screen_capture::{self, CaptureError, ScreenCapture, Screenshot};
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -35,7 +35,7 @@ const DEBUG_BATCH_ACTION_DELAY: Duration = Duration::from_secs(3);
 /// ingest them comfortably while still leaving enough resolution to
 /// identify UI elements. Override at startup with
 /// `--max-image-dimension=<n>` (use `0` to disable).
-pub const DEFAULT_MAX_IMAGE_DIMENSION: u32 = 720;
+pub const DEFAULT_MAX_IMAGE_DIMENSION: u32 = 900;
 
 /// CLI flag that overrides the screenshot dimension cap.
 const MAX_IMAGE_DIMENSION_FLAG: &str = "--max-image-dimension=";
@@ -115,9 +115,13 @@ pub enum ComputerAction {
         keys: Option<Vec<String>>,
     },
     #[serde(rename = "type")]
-    Type { text: String },
+    Type {
+        text: String,
+    },
     Wait,
-    Keypress { keys: Vec<String> },
+    Keypress {
+        keys: Vec<String>,
+    },
     Drag {
         path: Vec<XY>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -692,10 +696,8 @@ mod tests {
 
     #[test]
     fn server_config_disables_cap_with_zero() {
-        let cfg = server_config_from_args_iter(vec![
-            "prog".into(),
-            "--max-image-dimension=0".into(),
-        ]);
+        let cfg =
+            server_config_from_args_iter(vec!["prog".into(), "--max-image-dimension=0".into()]);
         assert_eq!(cfg.max_image_dimension, None);
     }
 

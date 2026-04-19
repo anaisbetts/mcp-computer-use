@@ -5,8 +5,8 @@
 //! only responsibility here; screen capture lives in `screen_capture`.
 
 use enigo::{
-    Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings,
-    InputError as EnigoInputError, NewConError,
+    Axis, Button, Coordinate, Direction, Enigo, InputError as EnigoInputError, Key, Keyboard,
+    Mouse, NewConError, Settings,
 };
 use std::time::Duration;
 use thiserror::Error;
@@ -122,12 +122,7 @@ impl DesktopController {
     }
 
     /// Move to `(x, y)` and left-click twice.
-    pub fn double_click(
-        &self,
-        x: i32,
-        y: i32,
-        modifiers: &[String],
-    ) -> Result<(), DesktopError> {
+    pub fn double_click(&self, x: i32, y: i32, modifiers: &[String]) -> Result<(), DesktopError> {
         let mut enigo = self.new_enigo()?;
         with_modifiers(&mut enigo, modifiers, |e| {
             e.move_mouse(x, y, Coordinate::Abs)?;
@@ -251,11 +246,7 @@ fn enigo_button(b: MouseButton) -> Button {
 
 /// Press the given modifier keys, run `body`, and release them in reverse
 /// order. An empty modifier list runs `body` directly.
-fn with_modifiers<F>(
-    enigo: &mut Enigo,
-    modifiers: &[String],
-    body: F,
-) -> Result<(), DesktopError>
+fn with_modifiers<F>(enigo: &mut Enigo, modifiers: &[String], body: F) -> Result<(), DesktopError>
 where
     F: FnOnce(&mut Enigo) -> Result<(), DesktopError>,
 {
@@ -329,8 +320,9 @@ fn map_key_name(name: &str) -> Result<Key, DesktopError> {
         "pagedown" | "pgdn" => Ok(Key::PageDown),
 
         // Function keys F1..F12
-        s if s.starts_with('f') && s.len() <= 3 => parse_function_key(s)
-            .ok_or_else(|| DesktopError::InvalidKey(name.to_string())),
+        s if s.starts_with('f') && s.len() <= 3 => {
+            parse_function_key(s).ok_or_else(|| DesktopError::InvalidKey(name.to_string()))
+        }
 
         // Single character — treat as Unicode keystroke
         s if s.chars().count() == 1 => {
@@ -425,7 +417,10 @@ mod tests {
         assert!(matches!(enigo_button(MouseButton::Right), Button::Right));
         assert!(matches!(enigo_button(MouseButton::Wheel), Button::Middle));
         assert!(matches!(enigo_button(MouseButton::Back), Button::Back));
-        assert!(matches!(enigo_button(MouseButton::Forward), Button::Forward));
+        assert!(matches!(
+            enigo_button(MouseButton::Forward),
+            Button::Forward
+        ));
     }
 
     /// Real `mouse_move` against the active desktop. Ignored by default
@@ -441,7 +436,8 @@ mod tests {
             eprintln!("skipping: input not available");
             return;
         }
-        ctrl.mouse_move(100, 100, &[]).expect("mouse_move should succeed");
+        ctrl.mouse_move(100, 100, &[])
+            .expect("mouse_move should succeed");
     }
 
     /// Same shape as `mouse_move_smoke` but with a modifier key, to catch
