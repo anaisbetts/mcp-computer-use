@@ -9,3 +9,21 @@ rmcp = { version = "0.16", features = ["server", "transport-io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+thiserror = "2"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Input simulation. Enabling the `wayland` feature on Linux lets enigo
+# drive native Wayland sessions in addition to the default xdo backend.
+# Splitting the dep across non-overlapping target cfgs avoids feature
+# unification dragging Wayland code onto Windows.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+enigo = { version = "0.3", features = ["serde"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+enigo = { version = "0.3", features = ["serde", "wayland"] }
+libwayshot = "0.7"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-capture = "2"

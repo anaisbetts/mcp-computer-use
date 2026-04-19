@@ -1,4 +1,10 @@
-//! MCP server: dual-mode computer-use stubs (`--batch` for batched OpenAI-style tool).
+//! MCP server: dual-mode computer use (`--batch` for batched OpenAI-style tool).
+//!
+//! Both server types share a single [`Backend`] via `Arc`. Batch mode exposes
+//! one `computer_use` tool that runs an array of actions; split mode exposes
+//! one MCP tool per action, each routed through the same dispatcher.
+
+use std::sync::Arc;
 
 use anyhow::Result;
 use rmcp::{
@@ -10,11 +16,12 @@ use rmcp::{
 };
 
 mod computer_use;
+mod desktop;
+mod screen_capture;
 
 use computer_use::{
-    ClickToolRequest, ComputerUseRequest, DoubleClickToolRequest, DragToolRequest,
+    Backend, ClickToolRequest, ComputerUseRequest, DoubleClickToolRequest, DragToolRequest,
     KeypressToolRequest, MoveToolRequest, ScrollToolRequest, TypeToolRequest, response_to_json,
-    stub_dispatch_batch,
 };
 
 // -----------------------------------------------------------------------------
@@ -22,10 +29,10 @@ use computer_use::{
 // -----------------------------------------------------------------------------
 
 const INSTRUCTIONS_BATCH: &str =
-    "MCP server with batched computer_use (OpenAI-style actions[]). Computer actions are stubs.";
+    "MCP server with batched computer_use (OpenAI-style actions[]). Drives the local desktop.";
 
 const INSTRUCTIONS_SPLIT: &str =
-    "MCP server with per-action computer_* tools. Computer actions are stubs.";
+    "MCP server with per-action computer_* tools. Drives the local desktop.";
 
 // -----------------------------------------------------------------------------
 // Types
@@ -33,11 +40,13 @@ const INSTRUCTIONS_SPLIT: &str =
 
 #[derive(Clone)]
 struct BatchComputerServer {
+    backend: Arc<Backend>,
     tool_router: ToolRouter<Self>,
 }
 
 #[derive(Clone)]
 struct SplitComputerServer {
+    backend: Arc<Backend>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -46,16 +55,11 @@ struct SplitComputerServer {
 // -----------------------------------------------------------------------------
 
 impl BatchComputerServer {
-    fn new() -> Self {
+    fn new(backend: Arc<Backend>) -> Self {
         Self {
+            backend,
             tool_router: Self::tool_router(),
         }
-    }
-}
-
-impl Default for BatchComputerServer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -77,10 +81,10 @@ impl BatchComputerServer {
 impl BatchComputerServer {
     #[tool(
         name = "computer_use",
-        description = "Execute OpenAI-style computer use actions in order (batched). Stub only."
+        description = "Execute OpenAI-style computer use actions in order (batched)."
     )]
     fn computer_use(&self, Parameters(req): Parameters<ComputerUseRequest>) -> String {
-        response_to_json(&stub_dispatch_batch(&req.actions))
+        response_to_json(&self.backend.execute_batch(&req.actions))
     }
 }
 
@@ -100,16 +104,11 @@ impl ServerHandler for BatchComputerServer {
 // -----------------------------------------------------------------------------
 
 impl SplitComputerServer {
-    fn new() -> Self {
+    fn new(backend: Arc<Backend>) -> Self {
         Self {
+            backend,
             tool_router: Self::tool_router(),
         }
-    }
-}
-
-impl Default for SplitComputerServer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -129,51 +128,53 @@ impl SplitComputerServer {
 
 #[tool_router(router = tool_router)]
 impl SplitComputerServer {
-    #[tool(description = "Computer use: click (stub)")]
+    #[tool(description = "Computer use: click")]
     fn computer_click(&self, Parameters(req): Parameters<ClickToolRequest>) -> String {
-        response_to_json(&stub_dispatch_batch(&[req.into()]))
+        response_to_json(&self.backend.execute_batch(&[req.into()]))
     }
 
-    #[tool(description = "Computer use: double_click (stub)")]
+    #[tool(description = "Computer use: double_click")]
     fn computer_double_click(&self, Parameters(req): Parameters<DoubleClickToolRequest>) -> String {
-        response_to_json(&stub_dispatch_batch(&[req.into()]))
+        response_to_json(&self.backend.execute_batch(&[req.into()]))
     }
 
-    #[tool(description = "Computer use: scroll (stub)")]
+    #[tool(description = "Computer use: scroll")]
     fn computer_scroll(&self, Parameters(req): Parameters<ScrollToolRequest>) -> String {
-        response_to_json(&stub_dispatch_batch(&[req.into()]))
+        response_to_json(&self.backend.execute_batch(&[req.into()]))
     }
 
-    #[tool(description = "Computer use: type (stub)")]
+    #[tool(description = "Computer use: type")]
     fn computer_type(&self, Parameters(req): Parameters<TypeToolRequest>) -> String {
-        response_to_json(&stub_dispatch_batch(&[req.into()]))
+        response_to_json(&self.backend.execute_batch(&[req.into()]))
     }
 
-    #[tool(description = "Computer use: wait (stub)")]
+    #[tool(description = "Computer use: wait")]
     fn computer_wait(&self) -> String {
-        response_to_json(&stub_dispatch_batch(&[computer_use::ComputerAction::Wait]))
+        response_to_json(&self.backend.execute_batch(&[computer_use::ComputerAction::Wait]))
     }
 
-    #[tool(description = "Computer use: keypress (stub)")]
+    #[tool(description = "Computer use: keypress")]
     fn computer_keypress(&self, Parameters(req): Parameters<KeypressToolRequest>) -> String {
-        response_to_json(&stub_dispatch_batch(&[req.into()]))
+        response_to_json(&self.backend.execute_batch(&[req.into()]))
     }
 
-    #[tool(description = "Computer use: drag (stub)")]
+    #[tool(description = "Computer use: drag")]
     fn computer_drag(&self, Parameters(req): Parameters<DragToolRequest>) -> String {
-        response_to_json(&stub_dispatch_batch(&[req.into()]))
+        response_to_json(&self.backend.execute_batch(&[req.into()]))
     }
 
-    #[tool(description = "Computer use: move (stub)")]
+    #[tool(description = "Computer use: move")]
     fn computer_move(&self, Parameters(req): Parameters<MoveToolRequest>) -> String {
-        response_to_json(&stub_dispatch_batch(&[req.into()]))
+        response_to_json(&self.backend.execute_batch(&[req.into()]))
     }
 
-    #[tool(description = "Computer use: screenshot (stub)")]
+    #[tool(description = "Computer use: screenshot")]
     fn computer_screenshot(&self) -> String {
-        response_to_json(&stub_dispatch_batch(&[
-            computer_use::ComputerAction::Screenshot,
-        ]))
+        response_to_json(
+            &self
+                .backend
+                .execute_batch(&[computer_use::ComputerAction::Screenshot]),
+        )
     }
 }
 
@@ -195,14 +196,15 @@ impl ServerHandler for SplitComputerServer {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mode = computer_use::tool_mode_from_args_iter(std::env::args());
+    let backend = Backend::new()?;
 
     match mode {
         computer_use::ToolMode::Batch => {
-            let service = BatchComputerServer::new().serve(stdio()).await?;
+            let service = BatchComputerServer::new(backend).serve(stdio()).await?;
             service.waiting().await?;
         }
         computer_use::ToolMode::Split => {
-            let service = SplitComputerServer::new().serve(stdio()).await?;
+            let service = SplitComputerServer::new(backend).serve(stdio()).await?;
             service.waiting().await?;
         }
     }
@@ -213,16 +215,20 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
 
+    fn test_backend() -> Arc<Backend> {
+        Backend::new().expect("backend init should not fail in tests")
+    }
+
     #[test]
     fn batch_server_exposes_only_computer_use() {
-        let s = BatchComputerServer::new();
+        let s = BatchComputerServer::new(test_backend());
         let names = s.tool_names_sorted();
         assert_eq!(names, vec!["computer_use".to_string()]);
     }
 
     #[test]
     fn split_server_exposes_per_action_tools() {
-        let s = SplitComputerServer::new();
+        let s = SplitComputerServer::new(test_backend());
         let names = s.tool_names_sorted();
         let expected = vec![
             "computer_click",
@@ -242,12 +248,14 @@ mod tests {
     }
 
     #[test]
-    fn batch_tool_routes_stub_json() {
-        let s = BatchComputerServer::new();
+    fn batch_wait_action_returns_ok() {
+        // `wait` does not need any OS permissions and is the safest action
+        // to exercise end-to-end through the real backend in CI.
+        let s = BatchComputerServer::new(test_backend());
         let json = s.computer_use(Parameters(ComputerUseRequest {
             actions: vec![computer_use::ComputerAction::Wait],
         }));
-        assert!(json.contains("not_implemented"));
-        assert!(json.contains("wait"));
+        assert!(json.contains("\"action\":\"wait\""));
+        assert!(json.contains("\"status\":\"ok\""));
     }
 }
