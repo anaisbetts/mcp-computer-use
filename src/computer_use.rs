@@ -26,6 +26,9 @@ const STATUS_ERROR: &str = "error";
 /// How long the `wait` action sleeps when no caller-specific value is set.
 const DEFAULT_WAIT: Duration = Duration::from_millis(1_000);
 
+/// Pause between consecutive actions in non-release builds (`debug_assertions`).
+const DEBUG_BATCH_ACTION_DELAY: Duration = Duration::from_secs(3);
+
 /// Default cap on the longest pixel dimension of returned screenshots.
 ///
 /// 720 keeps full-screen captures small enough that a vision model can
@@ -288,8 +291,18 @@ impl Backend {
     /// Errors on individual actions become `status: "error"` results so a
     /// batch is not aborted by a single failure — the caller decides
     /// whether to keep going.
+    ///
+    /// In non-release builds (`cfg!(debug_assertions)`), sleeps
+    /// [`DEBUG_BATCH_ACTION_DELAY`] between consecutive actions.
     pub fn execute_batch(&self, actions: &[ComputerAction]) -> ComputerUseResponse {
-        let results = actions.iter().map(|a| self.execute_one(a)).collect();
+        let mut results = Vec::with_capacity(actions.len());
+        for (i, action) in actions.iter().enumerate() {
+            log_action_stderr(action);
+            results.push(self.execute_one(action));
+            if cfg!(debug_assertions) && i + 1 < actions.len() {
+                std::thread::sleep(DEBUG_BATCH_ACTION_DELAY);
+            }
+        }
         ComputerUseResponse { results }
     }
 
@@ -588,7 +601,8 @@ where
 {
     let collected: Vec<String> = args.into_iter().collect();
     let mode = tool_mode_from_args_iter(collected.iter().cloned());
-    let raw = max_image_dimension_from_args_iter(collected).unwrap_or(DEFAULT_MAX_IMAGE_DIMENSION);
+    let raw = max_image_dimension_from_args_iter(collected.iter().cloned())
+        .unwrap_or(DEFAULT_MAX_IMAGE_DIMENSION);
     ServerConfig {
         mode,
         max_image_dimension: normalize_max_dim(Some(raw)),
@@ -602,6 +616,12 @@ fn normalize_max_dim(raw: Option<u32>) -> Option<u32> {
         Some(n) if n > 0 => Some(n),
         _ => None,
     }
+}
+
+/// Emit one MCP-safe diagnostic line to stderr (JSON-RPC uses stdout).
+fn log_action_stderr(action: &ComputerAction) {
+    let json = serde_json::to_string(action).expect("ComputerAction serializes to JSON");
+    eprintln!("mcp-computer-use: action {json}");
 }
 
 #[cfg(test)]
