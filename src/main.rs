@@ -1,4 +1,4 @@
-//! MCP server: dual-mode computer use (`--batch` for batched OpenAI-style tool).
+//! MCP server: batched computer use by default, with `--split` for per-action tools.
 //!
 //! Both server types share a single [`Backend`] via `Arc`. Batch mode exposes
 //! one `computer_use` tool that runs an array of actions; split mode exposes

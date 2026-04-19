@@ -31,7 +31,7 @@ The server can present its capabilities in one of two shapes, selected at
 startup. Both shapes share a single backend, so behavior is identical — only
 the JSON tool surface differs.
 
-### `--batch` mode — one tool, OpenAI-style
+### Default mode — one tool, OpenAI-style
 
 Exposes a single tool, `computer_use`, that takes an ordered `actions` array.
 This is the most native fit for OpenAI's computer-use schema: an agent can
@@ -49,13 +49,14 @@ the MCP boundary.
 }
 ```
 
-### Split mode (default) — one MCP tool per action
+### `--split` mode — one MCP tool per action
 
 Exposes one MCP tool per action type: `computer_click`, `computer_double_click`,
 `computer_scroll`, `computer_type`, `computer_wait`, `computer_keypress`,
 `computer_drag`, `computer_move`, `computer_screenshot`. The action name is
 implied by the tool name, so each request omits the `type` field. Useful for
-clients that prefer fine-grained tool listings or strict per-tool permissioning.
+clients that prefer fine-grained tool listings or strict per-tool permissioning,
+and for older models that do better with one tool per action.
 
 ### Response shape
 
@@ -105,7 +106,7 @@ All flags are optional and order-independent.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--batch` | off (split mode) | Expose a single `computer_use` tool that takes an ordered `actions` array, matching OpenAI's CUA schema. Without this flag, the server exposes one MCP tool per action (`computer_click`, `computer_type`, ...). |
+| `--split` | off (batched mode) | Expose one MCP tool per action (`computer_click`, `computer_type`, ...`) instead of the default `computer_use` tool with ordered `actions[]`. Useful for older models or clients that want per-tool permissioning. |
 | `--max-image-dimension=<n>` | `900` | Cap the longest pixel dimension of returned screenshots to `<n>`. The server downscales captures past this size and transparently remaps later click/scroll/move/drag coordinates from image space back to absolute desktop space, so models can target what they see. Set `--max-image-dimension=0` to disable downscaling and return native resolution. |
 | `--images-as-files` | off | Write screenshot PNGs under the OS temp dir (`{temp}/mcp-computer-use/`) and return a `path` field instead of inlining a `data:image/png;base64,...` URL. Useful when responses would otherwise be huge or when a client prefers loading images from disk. |
 

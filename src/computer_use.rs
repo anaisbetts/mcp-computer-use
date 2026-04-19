@@ -41,8 +41,8 @@ pub const DEFAULT_MAX_IMAGE_DIMENSION: u32 = 900;
 /// CLI flag that overrides the screenshot dimension cap.
 const MAX_IMAGE_DIMENSION_FLAG: &str = "--max-image-dimension=";
 
-/// CLI flag that selects batched tool exposure.
-const BATCH_FLAG: &str = "--batch";
+/// CLI flag that switches to per-action tool exposure.
+const SPLIT_FLAG: &str = "--split";
 
 /// When set, screenshot actions write PNGs under the process temp dir and
 /// return the file path instead of a base64 data URL.
@@ -601,15 +601,16 @@ impl From<MoveToolRequest> for ComputerAction {
 // Utilities
 // -----------------------------------------------------------------------------
 
-/// Parse [`ToolMode`] from process arguments: `--batch` enables batched tools.
+/// Parse [`ToolMode`] from process arguments: batched tools are the default,
+/// while `--split` switches to per-action tools.
 pub fn tool_mode_from_args_iter<I>(args: I) -> ToolMode
 where
     I: IntoIterator<Item = String>,
 {
-    if args.into_iter().any(|a| a == BATCH_FLAG) {
-        ToolMode::Batch
-    } else {
+    if args.into_iter().any(|a| a == SPLIT_FLAG) {
         ToolMode::Split
+    } else {
+        ToolMode::Batch
     }
 }
 
@@ -639,7 +640,7 @@ where
 
 /// Parse the full server config from process args.
 ///
-/// Defaults to `--split` mode, a 900-pixel screenshot cap, and inline
+/// Defaults to batched `computer_use` mode, a 900-pixel screenshot cap, and inline
 /// base64 data URLs (not file paths).
 pub fn server_config_from_args_iter<I>(args: I) -> ServerConfig
 where
@@ -695,14 +696,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_mode_batch_flag() {
+    fn tool_mode_split_flag() {
         assert_eq!(
-            tool_mode_from_args_iter(vec!["prog".into(), "--batch".into()]),
-            ToolMode::Batch
+            tool_mode_from_args_iter(vec!["prog".into(), "--split".into()]),
+            ToolMode::Split
         );
         assert_eq!(
             tool_mode_from_args_iter(vec!["prog".into()]),
-            ToolMode::Split
+            ToolMode::Batch
         );
     }
 
@@ -729,12 +730,12 @@ mod tests {
     }
 
     #[test]
-    fn server_config_defaults_to_split_and_default_cap() {
+    fn server_config_defaults_to_batch_and_default_cap() {
         let cfg = server_config_from_args_iter(vec!["prog".into()]);
         assert_eq!(
             cfg,
             ServerConfig {
-                mode: ToolMode::Split,
+                mode: ToolMode::Batch,
                 max_image_dimension: Some(DEFAULT_MAX_IMAGE_DIMENSION),
                 images_as_files: false,
             }
@@ -745,13 +746,13 @@ mod tests {
     fn server_config_honors_flags() {
         let cfg = server_config_from_args_iter(vec![
             "prog".into(),
-            "--batch".into(),
+            "--split".into(),
             "--max-image-dimension=1024".into(),
         ]);
         assert_eq!(
             cfg,
             ServerConfig {
-                mode: ToolMode::Batch,
+                mode: ToolMode::Split,
                 max_image_dimension: Some(1024),
                 images_as_files: false,
             }
