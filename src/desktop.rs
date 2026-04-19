@@ -230,13 +230,34 @@ impl DesktopController {
 ///
 /// `MouseButton::Wheel` collapses to a middle click — the OpenAI spec uses
 /// `wheel` to mean a wheel-button press, not a scroll gesture.
+///
+/// On macOS, `enigo::Button::Back` / `Button::Forward` are not exposed
+/// (the variants are `cfg`-gated out of the enum on macOS), so we fall
+/// back to the closest moral equivalent — a middle-button click — and
+/// log a warning so the caller can see the substitution.
 fn enigo_button(b: MouseButton) -> Button {
     match b {
         MouseButton::Left => Button::Left,
         MouseButton::Right => Button::Right,
         MouseButton::Wheel => Button::Middle,
+        #[cfg(not(target_os = "macos"))]
         MouseButton::Back => Button::Back,
+        #[cfg(not(target_os = "macos"))]
         MouseButton::Forward => Button::Forward,
+        #[cfg(target_os = "macos")]
+        MouseButton::Back => {
+            tracing::warn!(
+                "MouseButton::Back is unsupported by enigo on macOS; substituting middle click"
+            );
+            Button::Middle
+        }
+        #[cfg(target_os = "macos")]
+        MouseButton::Forward => {
+            tracing::warn!(
+                "MouseButton::Forward is unsupported by enigo on macOS; substituting middle click"
+            );
+            Button::Middle
+        }
     }
 }
 
@@ -416,11 +437,21 @@ mod tests {
         assert!(matches!(enigo_button(MouseButton::Left), Button::Left));
         assert!(matches!(enigo_button(MouseButton::Right), Button::Right));
         assert!(matches!(enigo_button(MouseButton::Wheel), Button::Middle));
-        assert!(matches!(enigo_button(MouseButton::Back), Button::Back));
-        assert!(matches!(
-            enigo_button(MouseButton::Forward),
-            Button::Forward
-        ));
+        // `Back` / `Forward` map to platform-native variants where they
+        // exist, and to `Middle` on macOS where enigo doesn't expose them.
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(matches!(enigo_button(MouseButton::Back), Button::Back));
+            assert!(matches!(
+                enigo_button(MouseButton::Forward),
+                Button::Forward
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert!(matches!(enigo_button(MouseButton::Back), Button::Middle));
+            assert!(matches!(enigo_button(MouseButton::Forward), Button::Middle));
+        }
     }
 
     /// Real `mouse_move` against the active desktop. Ignored by default
