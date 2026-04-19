@@ -67,7 +67,10 @@ mod windows;
 #[cfg(target_os = "linux")]
 mod linux;
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(target_os = "macos")]
+mod macos;
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 mod unsupported;
 
 /// Construct the platform-default capture backend.
@@ -82,7 +85,12 @@ pub fn new_default() -> Result<Box<dyn ScreenCapture>, CaptureError> {
         let backend = linux::LinuxWaylandCapture::new()?;
         Ok(Box::new(backend))
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        let backend = macos::MacOsCapture::new()?;
+        Ok(Box::new(backend))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         let backend = unsupported::UnsupportedCapture;
         Ok(Box::new(backend))

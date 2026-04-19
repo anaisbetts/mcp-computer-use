@@ -23,7 +23,8 @@ server with no shimming. The server speaks JSON-RPC over stdio.
   and still hit the right pixels on the real display.
 - Runs cross-platform: input simulation via `enigo` (with native Wayland
   support on Linux); screen capture uses `windows-capture` on Windows,
-  `libwayshot` on Linux/Wayland.
+  `libwayshot` on Linux/Wayland, `screencapturekit` (Apple's
+  ScreenCaptureKit) on macOS 14+.
 
 ## Tool surface
 
@@ -109,6 +110,23 @@ All flags are optional and order-independent.
 | `--split` | off (batched mode) | Expose one MCP tool per action (`computer_click`, `computer_type`, ...`) instead of the default `computer_use` tool with ordered `actions[]`. Useful for older models or clients that want per-tool permissioning. |
 | `--max-image-dimension=<n>` | `900` | Cap the longest pixel dimension of returned screenshots to `<n>`. The server downscales captures past this size and transparently remaps later click/scroll/move/drag coordinates from image space back to absolute desktop space, so models can target what they see. Set `--max-image-dimension=0` to disable downscaling and return native resolution. |
 | `--images-as-files` | off | Write screenshot PNGs under the OS temp dir (`{temp}/mcp-computer-use/`) and return a `path` field instead of inlining a `data:image/png;base64,...` URL. Useful when responses would otherwise be huge or when a client prefers loading images from disk. |
+
+## macOS permissions
+
+The host process that runs `mcp-computer-use` (the terminal, your MCP
+client, or whatever launches the binary) must be granted two
+permissions under **System Settings → Privacy & Security**:
+
+- **Screen Recording** — required by ScreenCaptureKit for the
+  `screenshot` action. Without it, `SCShareableContent::get` fails at
+  startup with a clear error.
+- **Accessibility** — required by `enigo` to synthesize mouse and
+  keyboard events. Without it, input actions silently no-op or are
+  dropped by the OS.
+
+Coordinates the model emits are in *image* space and are remapped to
+*logical display points* (not pixels) before reaching `enigo`, so
+clicks land in the right place on Retina displays.
 
 ## Coordinate handling
 

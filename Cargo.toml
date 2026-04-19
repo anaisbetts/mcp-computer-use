@@ -27,3 +27,6 @@ libwayshot = "0.7"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = { version = "1", features = ["macos_14_0"] }
