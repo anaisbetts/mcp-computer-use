@@ -221,11 +221,8 @@ mod tests {
     use super::*;
 
     fn test_backend() -> Arc<Backend> {
-        Backend::new(
-            Some(computer_use::DEFAULT_MAX_IMAGE_DIMENSION),
-            false,
-        )
-        .expect("backend init should not fail in tests")
+        Backend::new(Some(computer_use::DEFAULT_MAX_IMAGE_DIMENSION), false)
+            .expect("backend init should not fail in tests")
     }
 
     #[test]

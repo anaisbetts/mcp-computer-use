@@ -507,18 +507,15 @@ pub fn response_to_json(res: &ComputerUseResponse) -> String {
     serde_json::to_string(res).expect("ComputerUseResponse must serialize to JSON")
 }
 
-fn screenshot_to_payload(s: Screenshot, images_as_files: bool) -> Result<ScreenshotPayload, String> {
+fn screenshot_to_payload(
+    s: Screenshot,
+    images_as_files: bool,
+) -> Result<ScreenshotPayload, String> {
     let (image_url, path) = if images_as_files {
         let p = write_screenshot_png_to_temp(&s.png_data)?;
-        (
-            None,
-            Some(p.to_string_lossy().into_owned()),
-        )
+        (None, Some(p.to_string_lossy().into_owned()))
     } else {
-        (
-            Some(png_bytes_to_data_url(&s.png_data)),
-            None,
-        )
+        (Some(png_bytes_to_data_url(&s.png_data)), None)
     };
     Ok(ScreenshotPayload {
         kind: "input_image".to_string(),
@@ -682,11 +679,7 @@ fn write_screenshot_png_to_temp(png_data: &[u8]) -> Result<PathBuf, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path = dir.join(format!(
-        "screenshot_{}_{}.png",
-        id,
-        std::process::id()
-    ));
+    let path = dir.join(format!("screenshot_{}_{}.png", id, std::process::id()));
     std::fs::write(&path, png_data).map_err(|e| format!("write screenshot file: {e}"))?;
     std::fs::canonicalize(&path).map_err(|e| format!("canonicalize screenshot path: {e}"))
 }
@@ -767,10 +760,7 @@ mod tests {
 
     #[test]
     fn server_config_images_as_files_flag() {
-        let cfg = server_config_from_args_iter(vec![
-            "prog".into(),
-            "--images-as-files".into(),
-        ]);
+        let cfg = server_config_from_args_iter(vec!["prog".into(), "--images-as-files".into()]);
         assert!(cfg.images_as_files);
         let cfg = server_config_from_args_iter(vec!["prog".into()]);
         assert!(!cfg.images_as_files);

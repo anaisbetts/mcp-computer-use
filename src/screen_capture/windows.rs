@@ -9,7 +9,10 @@
 
 use image::{ImageBuffer, ImageFormat, Rgba, imageops::FilterType};
 use std::io::Cursor;
-use windows_capture::dxgi_duplication_api::{DxgiDuplicationApi, DxgiDuplicationFormat};
+use std::time::{Duration, Instant};
+use windows_capture::dxgi_duplication_api::{
+    DxgiDuplicationApi, DxgiDuplicationFormat, Error as DxgiError,
+};
 use windows_capture::monitor::Monitor;
 
 use super::{CaptureError, ScreenCapture, Screenshot, compute_scale_factor};
@@ -19,9 +22,22 @@ use crate::scaling::scaled_dimensions;
 // Constants
 // -----------------------------------------------------------------------------
 
-/// Per-frame timeout. Wide enough that a stalled compositor still completes
-/// the call but tight enough that we don't hang the MCP request indefinitely.
-const FRAME_TIMEOUT_MS: u32 = 1_000;
+/// Per-attempt timeout for `AcquireNextFrame`. Kept short so the outer loop
+/// can rotate quickly when the duplication API hands us metadata-only frames
+/// (see [`PRESENTED_FRAME_DEADLINE`]).
+const FRAME_ATTEMPT_TIMEOUT_MS: u32 = 250;
+
+/// Hard upper bound on how long a single `capture` call will spin waiting
+/// for a frame whose `LastPresentTime` is non-zero. The DXGI Desktop
+/// Duplication API frequently returns one or more metadata-only frames
+/// immediately after `DuplicateOutput` (and again when the desktop is
+/// idle); their texture contents are undefined and very commonly come back
+/// as all-black pixels, which is the symptom we are guarding against.
+///
+/// On a normally interactive desktop the cursor blink and other compositor
+/// updates produce a real present within a few hundred ms, so this only
+/// matters for completely frozen desktops.
+const PRESENTED_FRAME_DEADLINE: Duration = Duration::from_secs(5);
 
 /// Resampling filter used when downscaling captures. `Triangle` (bilinear)
 /// is fast and produces clean results for the screenshots a vision model
@@ -56,9 +72,62 @@ impl ScreenCapture for WindowsCapture {
             .map_err(|e| CaptureError::Failed(format!("primary monitor lookup failed: {e}")))?;
         let mut dup = DxgiDuplicationApi::new(monitor)
             .map_err(|e| CaptureError::Failed(format!("DxgiDuplicationApi::new: {e}")))?;
-        let mut frame = dup
-            .acquire_next_frame(FRAME_TIMEOUT_MS)
-            .map_err(|e| CaptureError::Failed(format!("acquire_next_frame: {e}")))?;
+
+        let (desktop_w, desktop_h, image_w, image_h, png_data) =
+            capture_presented_frame(&mut dup, max_dim)?;
+
+        Ok(Screenshot {
+            png_data,
+            width: image_w,
+            height: image_h,
+            physical_width: desktop_w,
+            physical_height: desktop_h,
+            scale_factor: compute_scale_factor(image_w, image_h, desktop_w, desktop_h),
+        })
+    }
+}
+
+/// Pull frames from `dup` until we get one that actually represents a desktop
+/// update (`LastPresentTime != 0`), then map it to CPU memory and PNG-encode
+/// it. Returns the desktop dimensions, source pixel format, final image
+/// dimensions and PNG bytes.
+///
+/// The DXGI Desktop Duplication API will happily hand back frames with
+/// `LastPresentTime == 0` after `DuplicateOutput` and on idle desktops; the
+/// underlying texture for those frames is documented as undefined and on
+/// many systems shows up as solid black, which is the bug this works around.
+///
+/// We rotate `acquire_next_frame` (which internally releases the previous
+/// frame at the start of each call) until either we get a presented frame
+/// or [`PRESENTED_FRAME_DEADLINE`] elapses. `DxgiError::Timeout` from a
+/// single attempt is normal on idle desktops and is treated as "try again".
+///
+/// All buffer extraction happens inside the loop so the borrowed
+/// [`DxgiDuplicationFrame`] never has to escape it.
+fn capture_presented_frame(
+    dup: &mut DxgiDuplicationApi,
+    max_dim: Option<u32>,
+) -> Result<(u32, u32, u32, u32, Vec<u8>), CaptureError> {
+    let deadline = Instant::now() + PRESENTED_FRAME_DEADLINE;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(CaptureError::Failed(
+                "no desktop update arrived within deadline".to_string(),
+            ));
+        }
+        let remaining_ms = (deadline - now).as_millis().min(u128::from(u32::MAX)) as u32;
+        let attempt_ms = remaining_ms.min(FRAME_ATTEMPT_TIMEOUT_MS).max(1);
+
+        let mut frame = match dup.acquire_next_frame(attempt_ms) {
+            Ok(f) => f,
+            Err(DxgiError::Timeout) => continue,
+            Err(e) => return Err(CaptureError::Failed(format!("acquire_next_frame: {e}"))),
+        };
+        if frame.frame_info().LastPresentTime == 0 {
+            continue;
+        }
+
         let buffer = frame
             .buffer()
             .map_err(|e| CaptureError::Failed(format!("frame.buffer: {e}")))?;
@@ -73,14 +142,7 @@ impl ScreenCapture for WindowsCapture {
         let (image_w, image_h, png_data) =
             encode_png(pixels, desktop_w, desktop_h, format, max_dim)?;
 
-        Ok(Screenshot {
-            png_data,
-            width: image_w,
-            height: image_h,
-            physical_width: desktop_w,
-            physical_height: desktop_h,
-            scale_factor: compute_scale_factor(image_w, image_h, desktop_w, desktop_h),
-        })
+        return Ok((desktop_w, desktop_h, image_w, image_h, png_data));
     }
 }
 
@@ -165,6 +227,11 @@ mod tests {
 
     /// Real DXGI capture against the active desktop. Ignored by default
     /// because it needs an interactive Windows session.
+    ///
+    /// Also acts as a regression test for the "all-black frame" bug: the
+    /// previous implementation would routinely return a frame whose pixels
+    /// were entirely zero, so we decode the PNG and assert at least one
+    /// non-black pixel exists.
     #[test]
     #[ignore]
     fn captures_one_real_frame() {
@@ -172,8 +239,15 @@ mod tests {
         let shot = backend.capture(None).expect("capture frame");
         assert!(shot.width > 0 && shot.height > 0);
         assert!(!shot.png_data.is_empty());
-        // Standard PNG signature.
         assert_eq!(&shot.png_data[..8], b"\x89PNG\r\n\x1a\n");
+
+        let decoded = image::load_from_memory_with_format(&shot.png_data, ImageFormat::Png)
+            .expect("decode captured PNG")
+            .to_rgba8();
+        let any_non_black = decoded
+            .pixels()
+            .any(|p| p[0] != 0 || p[1] != 0 || p[2] != 0);
+        assert!(any_non_black, "captured frame is entirely black pixels");
     }
 
     /// Real DXGI capture with a small max dimension to exercise the
