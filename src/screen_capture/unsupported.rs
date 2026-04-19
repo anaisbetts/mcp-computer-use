@@ -8,7 +8,7 @@ use super::{CaptureError, Screenshot, ScreenCapture};
 pub struct UnsupportedCapture;
 
 impl ScreenCapture for UnsupportedCapture {
-    fn capture(&self) -> Result<Screenshot, CaptureError> {
+    fn capture(&self, _max_dim: Option<u32>) -> Result<Screenshot, CaptureError> {
         Err(CaptureError::Unsupported(
             "no screen capture backend compiled for this OS".into(),
         ))

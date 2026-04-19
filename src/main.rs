@@ -17,6 +17,7 @@ use rmcp::{
 
 mod computer_use;
 mod desktop;
+mod scaling;
 mod screen_capture;
 
 use computer_use::{
@@ -195,10 +196,10 @@ impl ServerHandler for SplitComputerServer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mode = computer_use::tool_mode_from_args_iter(std::env::args());
-    let backend = Backend::new()?;
+    let config = computer_use::server_config_from_args_iter(std::env::args());
+    let backend = Backend::new(config.max_image_dimension)?;
 
-    match mode {
+    match config.mode {
         computer_use::ToolMode::Batch => {
             let service = BatchComputerServer::new(backend).serve(stdio()).await?;
             service.waiting().await?;
@@ -216,7 +217,8 @@ mod tests {
     use super::*;
 
     fn test_backend() -> Arc<Backend> {
-        Backend::new().expect("backend init should not fail in tests")
+        Backend::new(Some(computer_use::DEFAULT_MAX_IMAGE_DIMENSION))
+            .expect("backend init should not fail in tests")
     }
 
     #[test]

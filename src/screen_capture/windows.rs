@@ -3,15 +3,17 @@
 //! `windows-capture` exposes a small synchronous wrapper that grabs one
 //! desktop frame at a time, which is exactly what an MCP screenshot tool
 //! needs. We pull a frame, copy it out as RGBA (handling row padding),
-//! then PNG-encode using the `image` crate so the rest of the server
-//! sees a normalized payload.
+//! optionally downscale to the executor's max image dimension, then
+//! PNG-encode using the `image` crate so the rest of the server sees a
+//! normalized payload.
 
-use image::{ImageBuffer, ImageFormat, Rgba};
+use image::{ImageBuffer, ImageFormat, Rgba, imageops::FilterType};
 use std::io::Cursor;
 use windows_capture::dxgi_duplication_api::{DxgiDuplicationApi, DxgiDuplicationFormat};
 use windows_capture::monitor::Monitor;
 
-use super::{CaptureError, Screenshot, ScreenCapture};
+use super::{CaptureError, Screenshot, ScreenCapture, compute_scale_factor};
+use crate::scaling::scaled_dimensions;
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -20,6 +22,11 @@ use super::{CaptureError, Screenshot, ScreenCapture};
 /// Per-frame timeout. Wide enough that a stalled compositor still completes
 /// the call but tight enough that we don't hang the MCP request indefinitely.
 const FRAME_TIMEOUT_MS: u32 = 1_000;
+
+/// Resampling filter used when downscaling captures. `Triangle` (bilinear)
+/// is fast and produces clean results for the screenshots a vision model
+/// consumes; `Lanczos3` would be sharper but several times slower.
+const RESIZE_FILTER: FilterType = FilterType::Triangle;
 
 // -----------------------------------------------------------------------------
 // Backend
@@ -44,7 +51,7 @@ impl WindowsCapture {
 }
 
 impl ScreenCapture for WindowsCapture {
-    fn capture(&self) -> Result<Screenshot, CaptureError> {
+    fn capture(&self, max_dim: Option<u32>) -> Result<Screenshot, CaptureError> {
         let monitor = Monitor::primary()
             .map_err(|e| CaptureError::Failed(format!("primary monitor lookup failed: {e}")))?;
         let mut dup = DxgiDuplicationApi::new(monitor)
@@ -56,22 +63,23 @@ impl ScreenCapture for WindowsCapture {
             .buffer()
             .map_err(|e| CaptureError::Failed(format!("frame.buffer: {e}")))?;
 
-        let width = buffer.width();
-        let height = buffer.height();
+        let desktop_w = buffer.width();
+        let desktop_h = buffer.height();
         let format = buffer.format();
 
         let mut unpadded: Vec<u8> = Vec::new();
         let pixels = buffer.as_nopadding_buffer(&mut unpadded);
 
-        let png_data = encode_png(pixels, width, height, format)?;
+        let (image_w, image_h, png_data) =
+            encode_png(pixels, desktop_w, desktop_h, format, max_dim)?;
 
         Ok(Screenshot {
             png_data,
-            width,
-            height,
-            physical_width: width,
-            physical_height: height,
-            scale_factor: 1.0,
+            width: image_w,
+            height: image_h,
+            physical_width: desktop_w,
+            physical_height: desktop_h,
+            scale_factor: compute_scale_factor(image_w, image_h, desktop_w, desktop_h),
         })
     }
 }
@@ -80,7 +88,12 @@ impl ScreenCapture for WindowsCapture {
 // Pixel conversion
 // -----------------------------------------------------------------------------
 
-/// Encode a tightly-packed pixel buffer as PNG.
+/// Encode a tightly-packed pixel buffer as PNG, optionally downscaling
+/// to fit within `max_dim` on the longest side.
+///
+/// Returns the final image dimensions alongside the PNG bytes so the
+/// caller can record the coordinate map between image and desktop
+/// space.
 ///
 /// The DXGI duplication API hands us BGRA8 by default and may also use
 /// RGBA8. Other formats (e.g. 16-bit float HDR) are flagged as unsupported
@@ -90,7 +103,8 @@ fn encode_png(
     width: u32,
     height: u32,
     format: DxgiDuplicationFormat,
-) -> Result<Vec<u8>, CaptureError> {
+    max_dim: Option<u32>,
+) -> Result<(u32, u32, Vec<u8>), CaptureError> {
     let rgba = match format {
         DxgiDuplicationFormat::Bgra8 | DxgiDuplicationFormat::Bgra8Srgb => bgra_to_rgba(pixels),
         DxgiDuplicationFormat::Rgba8 | DxgiDuplicationFormat::Rgba8Srgb => pixels.to_vec(),
@@ -103,16 +117,21 @@ fn encode_png(
 
     let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_raw(width, height, rgba)
         .ok_or_else(|| {
-            CaptureError::Failed(format!(
-                "pixel buffer size mismatch ({}x{})",
-                width, height
-            ))
+            CaptureError::Failed(format!("pixel buffer size mismatch ({width}x{height})"))
         })?;
 
-    let mut out = Vec::with_capacity((width * height) as usize);
-    img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
+    let (target_w, target_h) = scaled_dimensions(width, height, max_dim);
+    let final_img = if target_w == width && target_h == height {
+        img
+    } else {
+        image::imageops::resize(&img, target_w, target_h, RESIZE_FILTER)
+    };
+
+    let mut out = Vec::with_capacity((target_w * target_h) as usize);
+    final_img
+        .write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
         .map_err(|e| CaptureError::Failed(format!("PNG encoding failed: {e}")))?;
-    Ok(out)
+    Ok((target_w, target_h, out))
 }
 
 fn bgra_to_rgba(pixels: &[u8]) -> Vec<u8> {
@@ -150,10 +169,22 @@ mod tests {
     #[ignore]
     fn captures_one_real_frame() {
         let backend = WindowsCapture::new().expect("capture backend init");
-        let shot = backend.capture().expect("capture frame");
+        let shot = backend.capture(None).expect("capture frame");
         assert!(shot.width > 0 && shot.height > 0);
         assert!(!shot.png_data.is_empty());
         // Standard PNG signature.
         assert_eq!(&shot.png_data[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    /// Real DXGI capture with a small max dimension to exercise the
+    /// resize path end-to-end. Ignored alongside the unscaled capture.
+    #[test]
+    #[ignore]
+    fn captures_resized_real_frame() {
+        let backend = WindowsCapture::new().expect("capture backend init");
+        let shot = backend.capture(Some(720)).expect("capture frame");
+        assert!(shot.width.max(shot.height) <= 720);
+        assert!(shot.physical_width >= shot.width);
+        assert!(shot.physical_height >= shot.height);
     }
 }
