@@ -201,7 +201,7 @@ impl ServerHandler for SplitComputerServer {
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = computer_use::server_config_from_args_iter(std::env::args());
-    let backend = Backend::new(config.max_image_dimension)?;
+    let backend = Backend::new(config.max_image_dimension, config.images_as_files)?;
 
     match config.mode {
         computer_use::ToolMode::Batch => {
@@ -221,8 +221,11 @@ mod tests {
     use super::*;
 
     fn test_backend() -> Arc<Backend> {
-        Backend::new(Some(computer_use::DEFAULT_MAX_IMAGE_DIMENSION))
-            .expect("backend init should not fail in tests")
+        Backend::new(
+            Some(computer_use::DEFAULT_MAX_IMAGE_DIMENSION),
+            false,
+        )
+        .expect("backend init should not fail in tests")
     }
 
     #[test]

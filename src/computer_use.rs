@@ -5,6 +5,7 @@
 //! `computer_*` tools. The [`Backend`] type wires those schemas to the
 //! real input controller and screen-capture backend.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,7 +32,7 @@ const DEBUG_BATCH_ACTION_DELAY: Duration = Duration::from_secs(3);
 
 /// Default cap on the longest pixel dimension of returned screenshots.
 ///
-/// 720 keeps full-screen captures small enough that a vision model can
+/// 900 keeps full-screen captures small enough that a vision model can
 /// ingest them comfortably while still leaving enough resolution to
 /// identify UI elements. Override at startup with
 /// `--max-image-dimension=<n>` (use `0` to disable).
@@ -42,6 +43,10 @@ const MAX_IMAGE_DIMENSION_FLAG: &str = "--max-image-dimension=";
 
 /// CLI flag that selects batched tool exposure.
 const BATCH_FLAG: &str = "--batch";
+
+/// When set, screenshot actions write PNGs under the process temp dir and
+/// return the file path instead of a base64 data URL.
+const IMAGES_AS_FILES_FLAG: &str = "--images-as-files";
 
 // -----------------------------------------------------------------------------
 // Types
@@ -63,6 +68,9 @@ pub struct ServerConfig {
     /// Cap on the longest pixel dimension of returned screenshots.
     /// `None` disables downscaling and returns native resolution.
     pub max_image_dimension: Option<u32>,
+    /// When true, screenshots are written as PNG files and the response
+    /// carries a filesystem path instead of inline image data.
+    pub images_as_files: bool,
 }
 
 /// Mouse button for [`ComputerAction::Click`].
@@ -146,6 +154,11 @@ pub struct ComputerUseRequest {
 
 /// One captured screen, attached to action results that produce images.
 ///
+/// Matches OpenAI multimodal `input_image` content parts: `type` is
+/// `"input_image"`, and either `image_url` (a full URL or a
+/// `data:image/png;base64,...` data URL) or `path` (absolute path to a
+/// saved PNG when the server runs with `--images-as-files`) is set.
+///
 /// `width`/`height` are the pixel dimensions of the PNG actually
 /// returned to the client — i.e. the coordinate space subsequent mouse
 /// actions should target. `physical_width`/`physical_height` describe
@@ -153,10 +166,15 @@ pub struct ComputerUseRequest {
 /// `image / desktop` along the longest desktop axis.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ScreenshotPayload {
-    /// Always `"image/png"` today.
-    pub media_type: String,
-    /// Base64-encoded PNG bytes.
-    pub data: String,
+    /// Always `"input_image"` for OpenAI-compatible image inputs.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Fully qualified URL or `data:image/png;base64,...` when inline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
+    /// Absolute path to a PNG file when `--images-as-files` is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     pub width: u32,
     pub height: u32,
     pub physical_width: u32,
@@ -258,6 +276,8 @@ pub struct Backend {
     /// Cap on the longest pixel dimension of returned screenshots.
     /// `None` disables downscaling.
     max_image_dimension: Option<u32>,
+    /// When true, write PNGs to disk and return paths instead of data URLs.
+    images_as_files: bool,
     /// Latest screenshot's image-to-desktop coordinate map.
     ///
     /// Mutated on every successful `screenshot` action so subsequent
@@ -273,7 +293,10 @@ enum CaptureSlot {
 
 impl Backend {
     /// Build a backend, swallowing screen-capture init errors.
-    pub fn new(max_image_dimension: Option<u32>) -> Result<Arc<Self>, DesktopError> {
+    pub fn new(
+        max_image_dimension: Option<u32>,
+        images_as_files: bool,
+    ) -> Result<Arc<Self>, DesktopError> {
         let desktop = DesktopController::new()?;
         let capture = match screen_capture::new_default() {
             Ok(b) => CaptureSlot::Ready(b),
@@ -286,6 +309,7 @@ impl Backend {
             desktop,
             capture,
             max_image_dimension: normalize_max_dim(max_image_dimension),
+            images_as_files,
             coordinate_map: Mutex::new(None),
         }))
     }
@@ -402,7 +426,7 @@ impl Backend {
                     .capture(self.max_image_dimension)
                     .map_err(|e: CaptureError| e.to_string())?;
                 self.update_coordinate_map(&shot);
-                Ok(screenshot_to_payload(shot))
+                screenshot_to_payload(shot, self.images_as_files)
             }
             CaptureSlot::Failed(msg) => Err(format!("screen capture unavailable: {msg}")),
         }
@@ -483,17 +507,29 @@ pub fn response_to_json(res: &ComputerUseResponse) -> String {
     serde_json::to_string(res).expect("ComputerUseResponse must serialize to JSON")
 }
 
-fn screenshot_to_payload(s: Screenshot) -> ScreenshotPayload {
-    let data = base64::engine::general_purpose::STANDARD.encode(&s.png_data);
-    ScreenshotPayload {
-        media_type: "image/png".to_string(),
-        data,
+fn screenshot_to_payload(s: Screenshot, images_as_files: bool) -> Result<ScreenshotPayload, String> {
+    let (image_url, path) = if images_as_files {
+        let p = write_screenshot_png_to_temp(&s.png_data)?;
+        (
+            None,
+            Some(p.to_string_lossy().into_owned()),
+        )
+    } else {
+        (
+            Some(png_bytes_to_data_url(&s.png_data)),
+            None,
+        )
+    };
+    Ok(ScreenshotPayload {
+        kind: "input_image".to_string(),
+        image_url,
+        path,
         width: s.width,
         height: s.height,
         physical_width: s.physical_width,
         physical_height: s.physical_height,
         scale_factor: s.scale_factor,
-    }
+    })
 }
 
 // -----------------------------------------------------------------------------
@@ -580,6 +616,14 @@ where
     }
 }
 
+/// True when `--images-as-files` is present in process arguments.
+pub fn images_as_files_from_args_iter<I>(args: I) -> bool
+where
+    I: IntoIterator<Item = String>,
+{
+    args.into_iter().any(|a| a == IMAGES_AS_FILES_FLAG)
+}
+
 /// Parse the screenshot dimension cap from `--max-image-dimension=<n>`.
 ///
 /// Returns `Some(n)` when the flag is present and parses, `None` when
@@ -598,7 +642,8 @@ where
 
 /// Parse the full server config from process args.
 ///
-/// Defaults to `--split` mode and a 720-pixel screenshot cap.
+/// Defaults to `--split` mode, a 900-pixel screenshot cap, and inline
+/// base64 data URLs (not file paths).
 pub fn server_config_from_args_iter<I>(args: I) -> ServerConfig
 where
     I: IntoIterator<Item = String>,
@@ -607,9 +652,11 @@ where
     let mode = tool_mode_from_args_iter(collected.iter().cloned());
     let raw = max_image_dimension_from_args_iter(collected.iter().cloned())
         .unwrap_or(DEFAULT_MAX_IMAGE_DIMENSION);
+    let images_as_files = images_as_files_from_args_iter(collected.iter().cloned());
     ServerConfig {
         mode,
         max_image_dimension: normalize_max_dim(Some(raw)),
+        images_as_files,
     }
 }
 
@@ -620,6 +667,28 @@ fn normalize_max_dim(raw: Option<u32>) -> Option<u32> {
         Some(n) if n > 0 => Some(n),
         _ => None,
     }
+}
+
+fn png_bytes_to_data_url(png_data: &[u8]) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(png_data);
+    format!("data:image/png;base64,{b64}")
+}
+
+/// Writes PNG bytes to a unique file under `{temp_dir}/mcp-computer-use/`.
+fn write_screenshot_png_to_temp(png_data: &[u8]) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join("mcp-computer-use");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create screenshot temp dir: {e}"))?;
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = dir.join(format!(
+        "screenshot_{}_{}.png",
+        id,
+        std::process::id()
+    ));
+    std::fs::write(&path, png_data).map_err(|e| format!("write screenshot file: {e}"))?;
+    std::fs::canonicalize(&path).map_err(|e| format!("canonicalize screenshot path: {e}"))
 }
 
 /// Emit one MCP-safe diagnostic line to stderr (JSON-RPC uses stdout).
@@ -674,6 +743,7 @@ mod tests {
             ServerConfig {
                 mode: ToolMode::Split,
                 max_image_dimension: Some(DEFAULT_MAX_IMAGE_DIMENSION),
+                images_as_files: false,
             }
         );
     }
@@ -690,8 +760,20 @@ mod tests {
             ServerConfig {
                 mode: ToolMode::Batch,
                 max_image_dimension: Some(1024),
+                images_as_files: false,
             }
         );
+    }
+
+    #[test]
+    fn server_config_images_as_files_flag() {
+        let cfg = server_config_from_args_iter(vec![
+            "prog".into(),
+            "--images-as-files".into(),
+        ]);
+        assert!(cfg.images_as_files);
+        let cfg = server_config_from_args_iter(vec!["prog".into()]);
+        assert!(!cfg.images_as_files);
     }
 
     #[test]
@@ -758,8 +840,9 @@ mod tests {
                     status: STATUS_OK.into(),
                     message: None,
                     image: Some(ScreenshotPayload {
-                        media_type: "image/png".into(),
-                        data: "AAAA".into(),
+                        kind: "input_image".into(),
+                        image_url: Some("data:image/png;base64,AAAA".into()),
+                        path: None,
                         width: 720,
                         height: 405,
                         physical_width: 1920,
@@ -774,11 +857,53 @@ mod tests {
         assert!(json.contains("\"action\":\"click\""));
         assert!(json.contains("\"action\":\"screenshot\""));
         assert!(json.contains("\"image\":{"));
-        assert!(json.contains("\"media_type\":\"image/png\""));
+        assert!(json.contains("\"type\":\"input_image\""));
+        assert!(json.contains("\"image_url\":\"data:image/png;base64,AAAA\""));
         assert!(json.contains("\"width\":720"));
         assert!(json.contains("\"physical_width\":1920"));
         // No image on the click result should mean no `image` key for it.
         assert_eq!(json.matches("\"image\":").count(), 1);
+    }
+
+    #[test]
+    fn response_serializes_screenshot_with_file_path() {
+        let res = ComputerUseResponse {
+            results: vec![ActionResult {
+                action: "screenshot".into(),
+                status: STATUS_OK.into(),
+                message: None,
+                image: Some(ScreenshotPayload {
+                    kind: "input_image".into(),
+                    image_url: None,
+                    path: Some("/tmp/mcp-screenshot.png".into()),
+                    width: 100,
+                    height: 50,
+                    physical_width: 1920,
+                    physical_height: 1080,
+                    scale_factor: 0.05,
+                }),
+            }],
+        };
+        let json = response_to_json(&res);
+        assert!(json.contains("\"type\":\"input_image\""));
+        assert!(json.contains("\"path\":\"/tmp/mcp-screenshot.png\""));
+        assert!(!json.contains("image_url"));
+    }
+
+    #[test]
+    fn png_data_url_matches_openai_data_url_shape() {
+        let url = super::png_bytes_to_data_url(&[0, 1, 2]);
+        assert!(url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn write_screenshot_png_to_temp_round_trips_bytes() {
+        let data = vec![0x89u8, 0x50, 0x4e, 0x47];
+        let path = super::write_screenshot_png_to_temp(&data).expect("write temp png");
+        assert!(path.exists());
+        let read_back = std::fs::read(&path).expect("read back");
+        assert_eq!(read_back, data);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -831,7 +956,7 @@ mod tests {
     /// that act before any screenshot has been requested.
     #[test]
     fn backend_without_map_passes_coordinates_through() {
-        let backend = Backend::new(Some(720)).expect("backend init");
+        let backend = Backend::new(Some(720), false).expect("backend init");
         assert!(backend.current_coordinate_map().is_none());
         assert_eq!(backend.remap_xy(123, 456), (123, 456));
         let path = vec![XY { x: 1, y: 2 }, XY { x: 3, y: 4 }];
@@ -846,7 +971,7 @@ mod tests {
     /// image-space coordinates back to absolute desktop space.
     #[test]
     fn backend_with_installed_map_remaps_dispatch_coordinates() {
-        let backend = Backend::new(Some(720)).expect("backend init");
+        let backend = Backend::new(Some(720), false).expect("backend init");
         backend.install_test_coordinate_map(CoordinateMap {
             image_width: 720,
             image_height: 405,
